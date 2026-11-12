@@ -1,0 +1,7 @@
+﻿# 编译产物与本地测试夹具
+bin/
+fixtures/
+*.exe
+*.pdb
+# 从 v2rayN 拷贝的参考源码（GPL，仅本地对照）
+reference/
