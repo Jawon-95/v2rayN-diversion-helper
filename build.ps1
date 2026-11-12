@@ -9,7 +9,9 @@ $refs = '/r:System.Web.Extensions.dll', '/r:System.Windows.Forms.dll', '/r:Syste
 if ($LASTEXITCODE) { throw 'build failed' }
 if ($args -contains '-Test') {
   & $csc /nologo /target:exe /utf8output /codepage:65001 "/out:$out\RoutingTests.exe" /main:RoutingTests @refs @src (Join-Path $root 'tests\RoutingTests.cs')
+  & $csc /nologo /target:exe /utf8output /codepage:65001 "/out:$out\UiTests.exe" /main:UiTests @refs @src (Join-Path $root 'tests\UiTests.cs')
   if ($LASTEXITCODE) { throw 'test build failed' }
 }
 Write-Host "OK -> $out\应用分流助手.exe"
+
 
