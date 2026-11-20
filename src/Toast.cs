@@ -32,7 +32,7 @@ public sealed class Toast : Form {
   Size ts=TextRenderer.MeasureText(title,titleFont),ds=string.IsNullOrEmpty(detail)?Size.Empty:TextRenderer.MeasureText(detail,detailFont);
   int w=Math.Max(ts.Width,ds.Width)+S(18+26+12+22),h=S(14)+ts.Height+(ds.Height>0?S(2)+ds.Height:0)+S(14);
   var area=owner.RectangleToScreen(owner.ClientRectangle);w=Math.Min(w,Math.Max(S(200),area.Width-S(40)));
-  Size=new Size(w,h);lift=S(18);baseTop=area.Bottom-h-S(76);Left=area.Left+(area.Width-w)/2;Top=baseTop+lift;
+  Size=new Size(w,h);lift=S(18);baseTop=area.Bottom-h-S(28);Left=area.Left+(area.Width-w)/2;Top=baseTop+lift;
   using(var path=Rounded(new Rectangle(0,0,w,h),S(10)))Region=new Region(path);
   timer.Tick+=Step;Click+=(s,e)=>Close();
   FormClosed+=(s,e)=>{timer.Dispose();titleFont.Dispose();detailFont.Dispose();};

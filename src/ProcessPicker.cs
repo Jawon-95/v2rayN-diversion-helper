@@ -17,60 +17,59 @@ public sealed class ProcessPicker : Form {
  static readonly Color SelectedBack=Theme.SelectedBack,HoverBack=Theme.HoverBack,PendingBack=Color.FromArgb(255,248,225);
 
  readonly MainForm host;readonly AppPane target,other;bool byPath,saving;
- readonly DataGridView grid=Theme.Grid();readonly TextBox search=new TextBox();readonly ComboBox mode=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList};
- readonly Label status;readonly Button save,close,refresh;readonly WindowFinder finder=new WindowFinder();
+ readonly DataGridView grid=Theme.Grid();readonly InputBox searchBox=new InputBox("搜索名称、进程名、PID 或窗口标题",Theme.IconSearch);readonly TextBox search;readonly Segmented mode=new Segmented("按进程名","按完整路径");
+ readonly Label status;readonly FlatButton save,close,refresh;readonly WindowFinder finder=new WindowFinder();
  List<ProcInfo> processes=new List<ProcInfo>();List<ProcGroup> tops=new List<ProcGroup>();readonly List<Row> rows=new List<Row>();
  readonly HashSet<string> expanded=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
  readonly Dictionary<string,Change> pending=new Dictionary<string,Change>(StringComparer.OrdinalIgnoreCase);
  readonly float scale;readonly Size glyph;readonly Font sectionFont,boldFont;string filter="";int hover=-1;Task scanTask;
 
  int S(double v){return (int)Math.Round(v*scale);}
+ public bool ByPath{get{return byPath;}}
 
  public ProcessPicker(MainForm host,AppPane target,AppPane other,bool path){
   this.host=host;this.target=target;this.other=other;byPath=path;
-  Text="从进程列表选择 · "+target.Title;Font=new Font("Microsoft YaHei UI",10);BackColor=Theme.Background;StartPosition=FormStartPosition.CenterParent;ShowInTaskbar=false;KeyPreview=true;AllowTransparency=true;
+  Text="添加到「"+target.Title+"」";Font=Theme.Font(10);BackColor=Theme.Surface;StartPosition=FormStartPosition.CenterParent;ShowInTaskbar=false;KeyPreview=true;AllowTransparency=true;
   using(var g=CreateGraphics()){scale=g.DpiX/96f;glyph=CheckBoxRenderer.GetGlyphSize(g,CheckBoxState.UncheckedNormal);}
   try{Icon=host.Icon;}catch{}
-  Size=new Size(S(1060),S(740));MinimumSize=new Size(S(820),S(520));
-  sectionFont=new Font("Microsoft YaHei UI",11.5f);boldFont=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
+  Size=new Size(S(1000),S(700));MinimumSize=new Size(S(760),S(480));
+  sectionFont=new Font("Microsoft YaHei UI",9.5f,FontStyle.Bold);boldFont=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
+  search=searchBox.Box;
 
-  // 顶部：标题、说明、搜索 / 匹配方式 / 准星 / 刷新
-  var top=new Panel{Dock=DockStyle.Top,Height=S(122),Padding=new Padding(S(16),S(10),S(16),S(10))};
-  var title=Theme.Label("勾选要加入「"+target.Title+"」的应用",13,true);title.ForeColor=target.Accent;title.Location=new Point(S(14),S(10));top.Controls.Add(title);
-  var sub=Theme.Label("勾选或取消后，点右下角「保存」直接写入 v2rayN。也可以按住右侧的准星图标，拖到目标窗口上松开，即可在列表中定位到该进程。",9);sub.ForeColor=Theme.Muted;sub.Location=new Point(S(16),S(42));top.Controls.Add(sub);
-  var tools=new TableLayoutPanel{Dock=DockStyle.Bottom,Height=S(44),ColumnCount=5,RowCount=1,Margin=Padding.Empty};
-  tools.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,S(200)));tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,S(48)));tools.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,S(100)));
-  search.Dock=DockStyle.Fill;search.Margin=new Padding(0,S(8),S(10),0);search.HandleCreated+=(s,e)=>Native.SendMessage(search.Handle,0x1501,(IntPtr)1,"搜索名称、进程名、PID、窗口标题或路径");tools.Controls.Add(search,0,0);
-  mode.Items.AddRange(new object[]{"按进程名称匹配","按完整路径匹配"});mode.SelectedIndex=byPath?1:0;mode.Dock=DockStyle.Fill;mode.Margin=new Padding(0,S(8),S(10),0);tools.Controls.Add(mode,1,0);
-  finder.Size=new Size(S(40),S(40));finder.Margin=new Padding(0,S(2),S(6),0);tools.Controls.Add(finder,2,0);
-  var finderText=Theme.Label("拖到窗口",9);finderText.ForeColor=Theme.Muted;finderText.Margin=new Padding(0,S(13),S(12),0);tools.Controls.Add(finderText,3,0);
-  refresh=Theme.Button("刷新");refresh.Dock=DockStyle.Fill;refresh.Margin=new Padding(0,S(4),0,S(2));tools.Controls.Add(refresh,4,0);
-  top.Controls.Add(tools);Controls.Add(top);
-  var tip=new ToolTip();tip.SetToolTip(finder,"按住并拖动到任意窗口上，松开即可选中该窗口所属的进程");
+  // 顶部：搜索 / 匹配方式 / 准星 / 刷新
+  var top=new Panel{Dock=DockStyle.Top,Height=S(64),Padding=new Padding(S(18),S(14),S(18),S(12)),BackColor=Theme.Surface};
+  searchBox.Dock=DockStyle.Fill;
+  mode.SelectedIndex=byPath?1:0;mode.Dock=DockStyle.Right;Theme.Tips.SetToolTip(mode,"按进程名：所有同名程序都按名单分流\r\n按完整路径：只匹配这个位置的程序");
+  finder.Size=new Size(S(38),S(38));finder.Dock=DockStyle.Right;Theme.Tips.SetToolTip(finder,"按住拖到任意窗口上松开，定位它所属的进程");
+  refresh=new FlatButton("",ButtonKind.Ghost,Theme.IconRefresh){Dock=DockStyle.Right,AutoWidth=false,Width=S(38)};Theme.Tips.SetToolTip(refresh,"刷新进程列表");
+  Func<Control> gap=()=>new Panel{Dock=DockStyle.Right,Width=S(10),BackColor=Theme.Surface};
+  top.Controls.Add(searchBox);top.Controls.Add(gap());top.Controls.Add(mode);top.Controls.Add(gap());top.Controls.Add(finder);top.Controls.Add(gap());top.Controls.Add(refresh);
+  Controls.Add(top);
 
   // 底部：状态 + 关闭 / 保存
-  var bottom=new TableLayoutPanel{Dock=DockStyle.Bottom,Height=S(60),ColumnCount=3,RowCount=1,Padding=new Padding(S(16),S(10),S(16),S(12))};
-  bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,S(110)));bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,S(150)));
-  status=Theme.Label("正在读取进程…",9);status.ForeColor=Theme.Muted;status.AutoSize=false;status.Dock=DockStyle.Fill;status.TextAlign=System.Drawing.ContentAlignment.MiddleLeft;status.AutoEllipsis=true;bottom.Controls.Add(status,0,0);
-  close=Theme.Button("关闭");close.Dock=DockStyle.Fill;bottom.Controls.Add(close,1,0);
-  save=Theme.Button("保存",true);save.Dock=DockStyle.Fill;save.EnabledChanged+=(s,e)=>{save.BackColor=save.Enabled?Theme.Blue:Color.FromArgb(203,213,225);save.FlatAppearance.BorderColor=save.BackColor;};save.Enabled=false;bottom.Controls.Add(save,2,0);
+  var bottom=new Panel{Dock=DockStyle.Bottom,Height=S(62),Padding=new Padding(S(18),S(12),S(18),S(14)),BackColor=Theme.Surface};
+  bottom.Paint+=(s,e)=>{using(var p=new Pen(Theme.Line))e.Graphics.DrawLine(p,0,0,bottom.Width,0);};
+  status=Theme.Label("正在读取进程…",9);status.ForeColor=Theme.Muted;status.AutoSize=false;status.Dock=DockStyle.Fill;status.TextAlign=System.Drawing.ContentAlignment.MiddleLeft;status.AutoEllipsis=true;
+  close=new FlatButton("关闭"){Dock=DockStyle.Right,AutoWidth=false,Width=S(96)};
+  save=new FlatButton("保存",ButtonKind.Primary){Accent=target.Accent,Dock=DockStyle.Right,AutoWidth=false,Width=S(120)};save.Enabled=false;
+  bottom.Controls.Add(status);bottom.Controls.Add(close);bottom.Controls.Add(gap());bottom.Controls.Add(save);
   Controls.Add(bottom);
 
   // 进程树
-  grid.VirtualMode=true;grid.MultiSelect=false;grid.CellBorderStyle=DataGridViewCellBorderStyle.None;grid.ShowCellToolTips=true;grid.RowTemplate.Height=S(30);grid.ColumnHeadersHeight=S(34);grid.StandardTab=true;
+  grid.VirtualMode=true;grid.MultiSelect=false;grid.ColumnHeadersVisible=true;grid.ShowCellToolTips=true;grid.RowTemplate.Height=S(34);grid.ColumnHeadersHeight=S(32);grid.StandardTab=true;
   AddColumn("名称",0,44);AddColumn("分流状态",S(150),0);AddColumn("PID",S(76),0);AddColumn("进程",S(170),0);AddColumn("路径",0,56);
   grid.CellValueNeeded+=(s,e)=>{if(e.RowIndex<rows.Count)e.Value=Value(rows[e.RowIndex],e.ColumnIndex);};
-  grid.RowHeightInfoNeeded+=(s,e)=>{if(e.RowIndex<rows.Count&&rows[e.RowIndex].Kind==0)e.Height=S(38);};
+  grid.RowHeightInfoNeeded+=(s,e)=>{if(e.RowIndex<rows.Count&&rows[e.RowIndex].Kind==0)e.Height=S(36);};
   grid.CellToolTipTextNeeded+=(s,e)=>{if(e.RowIndex>=0&&e.RowIndex<rows.Count&&e.ColumnIndex==0){var r=rows[e.RowIndex];if(r.Kind==1)e.ToolTipText=r.Group.Path??r.Group.Name;else if(r.Kind==2)e.ToolTipText=r.Proc.Path??r.Proc.Name;}};
   grid.CellPainting+=PaintCell;grid.CellMouseDown+=CellMouseDown;grid.CellMouseDoubleClick+=CellDoubleClick;grid.KeyDown+=GridKey;
   grid.CellMouseEnter+=(s,e)=>SetHover(e.RowIndex);grid.MouseLeave+=(s,e)=>SetHover(-1);
   Controls.Add(grid);grid.BringToFront();
 
   search.TextChanged+=(s,e)=>Render();
-  mode.SelectedIndexChanged+=(s,e)=>{byPath=mode.SelectedIndex==1;Regroup();};
-  refresh.Click+=async(s,e)=>await Reload();
+  mode.Changed+=()=>{byPath=mode.SelectedIndex==1;Regroup();};
+  refresh.Click+=async(s,e)=>await Reload();grid.Paint+=(s,e)=>{using(var p=new Pen(Theme.Line))e.Graphics.DrawLine(p,0,grid.ColumnHeadersHeight-1,grid.Width,grid.ColumnHeadersHeight-1);};
   save.Click+=async(s,e)=>await SaveChanges(this);
-  close.Click+=(s,e)=>Close();CancelButton=close;
+  close.Click+=(s,e)=>Close();KeyDown+=(s,e)=>{if(e.KeyCode==Keys.Escape&&!finder.Dragging){e.Handled=true;Close();}};
   finder.Hovering+=t=>status.Text=t;
   finder.DragChanged+=on=>{Opacity=on?0.4:1;if(!on)UpdateState();};
   finder.Picked+=async pid=>await Pick(pid);
@@ -153,8 +152,8 @@ public sealed class ProcessPicker : Form {
   int n=pending.Count;save.Enabled=!saving&&(n>0||host.IsDirty);save.Text=n>0?"保存 ("+n+")":"保存";
   if(finder.Dragging)return;
   int total=processes.Count,checkedCount=AllGroups(tops).Count(g=>g.Selectable&&IsChecked(g));
-  string text=total+" 个进程 · 已勾选 "+checkedCount+" 个 · "+(byPath?"按完整路径匹配（仅这个程序副本）":"按进程名称匹配（所有同名程序）");
-  if(n>0)text="● "+n+" 项更改未保存    "+text;else if(host.IsDirty)text="● 主窗口有未保存的修改    "+text;
+  string text="已勾选 "+checkedCount+" 个 · 共 "+total+" 个进程";
+  if(n>0)text="● "+n+" 项更改未保存　　"+text;
   status.Text=text;
  }
  static IEnumerable<ProcGroup> AllGroups(IEnumerable<ProcGroup> list){foreach(var g in list){yield return g;foreach(var c in AllGroups(g.Children))yield return c;}}
@@ -166,7 +165,7 @@ public sealed class ProcessPicker : Form {
    foreach(var c in pending.Values.ToList()){if(c.Add)host.Insert(target,c.Entry);else target.Entries.RemoveAll(x=>string.Equals(x.Match,c.Entry.Match,StringComparison.OrdinalIgnoreCase));}
    target.Added();other.RefreshRows();pending.Clear();
    bool ok=await host.Save(false);
-   if(ok)Toast.Notify(toastOwner,"已保存到 v2rayN","从托盘退出并重新打开 v2rayN 后生效",true);
+   if(ok)Toast.Notify(toastOwner,"已保存","重启 v2rayN 后生效",true);
    return ok;
   }finally{saving=false;UseWaitCursor=false;if(!IsDisposed){grid.Invalidate();UpdateState();}}
  }
@@ -203,12 +202,12 @@ public sealed class ProcessPicker : Form {
  void PaintCell(object sender,DataGridViewCellPaintingEventArgs e){
   if(e.RowIndex<0||e.RowIndex>=rows.Count||e.ColumnIndex<0)return;
   var r=rows[e.RowIndex];var g=e.Graphics;var b=e.CellBounds;bool selected=(e.State&DataGridViewElementStates.Selected)!=0;
-  Color back=Color.White;
+  Color back=Theme.Surface;
   if(r.Kind!=0){if(selected)back=SelectedBack;else if(e.RowIndex==hover)back=HoverBack;else if(r.Kind==1&&r.Group.Match!=null&&pending.ContainsKey(r.Group.Match))back=PendingBack;}
-  using(var brush=new SolidBrush(back))g.FillRectangle(brush,b);
+  Theme.PaintRow(grid,e,back);
   e.Handled=true;
   var flags=TextFormatFlags.VerticalCenter|TextFormatFlags.Left|TextFormatFlags.NoPrefix|TextFormatFlags.SingleLine|TextFormatFlags.EndEllipsis;
-  if(r.Kind==0){if(e.ColumnIndex==0)TextRenderer.DrawText(g,Convert.ToString(e.Value),sectionFont,new Rectangle(b.X+S(12),b.Y+S(4),b.Width*2,b.Height-S(4)),Theme.Blue,flags);return;}
+  if(r.Kind==0){if(e.ColumnIndex==0)TextRenderer.DrawText(g,Convert.ToString(e.Value),sectionFont,new Rectangle(b.X+S(12),b.Y+S(6),b.Width*2,b.Height-S(6)),Theme.Muted,flags);return;}
   if(e.ColumnIndex==0){
    var parts=PartsOf(r,b.Height);
    if(r.Kind==1&&Expandable(r.Group))DrawChevron(g,Offset(parts.Chevron,b),IsOpen(r.Group));

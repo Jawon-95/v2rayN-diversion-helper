@@ -73,6 +73,7 @@ public sealed class RouteSnapshot {
  public RouteProfile Profile;
  public string Root,SourcePath,SourceText,MappingText;
  public List<AppEntry> Direct=new List<AppEntry>(),Split=new List<AppEntry>();
+ public List<HostEntry> DirectHosts=new List<HostEntry>(),ProxyHosts=new List<HostEntry>();
  public bool IsNew;
 }
 
@@ -89,7 +90,9 @@ public sealed class RoutingStore {
   var snapshot=new RouteSnapshot{Profile=profile,Root=Root,IsNew=profile==null};
   if(profile==null){snapshot.Split.Add(new AppEntry("msedge.exe"));snapshot.Split.Add(new AppEntry("chrome.exe"));return snapshot;}
   var rules=Json.Arr(Json.Serializer().DeserializeObject(profile.RawRules));
-  foreach(var o in rules){var r=Json.Obj(o);if(Json.Str(r,"OutboundTag")=="direct"&&Json.Flag(r,"Enabled",true))foreach(var p in Json.Arr(Json.Get(r,"Process")))AddUnique(snapshot.Direct,new AppEntry(Convert.ToString(p)));}
+  foreach(var o in rules){var r=Json.Obj(o);string kind=HostRuleKind(r);
+   if(kind!=null){var list=kind.StartsWith("direct")?snapshot.DirectHosts:snapshot.ProxyHosts;foreach(var v in Json.Arr(Json.Get(r,"Domain")))HostEntry.AddUnique(list,HostEntry.FromStored(Convert.ToString(v),false));foreach(var v in Json.Arr(Json.Get(r,"Ip")))HostEntry.AddUnique(list,HostEntry.FromStored(Convert.ToString(v),true));continue;}
+   if(Json.Str(r,"OutboundTag")=="direct"&&Json.Flag(r,"Enabled",true))foreach(var p in Json.Arr(Json.Get(r,"Process")))AddUnique(snapshot.Direct,new AppEntry(Convert.ToString(p)));}
   if(profile.Managed){
    if(string.IsNullOrEmpty(profile.MappingPath)||!File.Exists(profile.MappingPath))throw new IOException("此规则的本地规则集映射文件丢失，请先恢复该文件。");
    snapshot.MappingText=File.ReadAllText(profile.MappingPath,Encoding.UTF8);
@@ -130,11 +133,30 @@ public sealed class RoutingStore {
   else conditions[0]=new Dictionary<string,object>{{"type","logical"},{"mode","or"},{"rules",matches}};
   outer["rules"]=conditions;return source;
  }
- public static List<object> BuildRules(string oldRules,List<AppEntry> direct,List<AppEntry> split){var rules=new List<object>();if(direct.Count>0)rules.Add(new Dictionary<string,object>{{"id","app-manager-direct"},{"remarks","全部直连应用"},{"outboundTag","direct"},{"process",direct.Select(x=>x.Match).ToArray()},{"enabled",true}});rules.Add(new Dictionary<string,object>{{"id","app-manager-split"},{"remarks","指定应用国内直连，国外代理"},{"outboundTag","direct"},{"domain",new[]{"geosite:app-split-cn"}},{"enabled",split.Count>0}});
-  if(!string.IsNullOrEmpty(oldRules)){foreach(var value in Json.Arr(Json.Serializer().DeserializeObject(oldRules))){var r=Json.Obj(value);if(r.Count==0||Json.Get(r,"value")!=null)throw new IOException("现有路由结构异常，请先备份并修复。");if(Json.Get(r,"Process")!=null&&Json.Str(r,"OutboundTag")=="direct")continue;if(Json.Arr(Json.Get(r,"Domain")).Any(x=>Convert.ToString(x)=="geosite:app-split-cn"))continue;if(Json.Str(r,"OutboundTag")=="proxy"&&Json.Str(r,"Port")=="0-65535")continue;rules.Add(r);}}
+ // 本工具管理的域名 / IP 规则：先按 id 识别，v2rayN 重新生成 id 时再按备注识别。
+ static readonly string[][] HostRules={new[]{"app-manager-host-direct-domain","direct","直连域名（分流助手）"},new[]{"app-manager-host-direct-ip","direct","直连 IP（分流助手）"},new[]{"app-manager-host-proxy-domain","proxy","代理域名（分流助手）"},new[]{"app-manager-host-proxy-ip","proxy","代理 IP（分流助手）"}};
+ static string HostRuleKind(Dictionary<string,object> r){string id=Json.Str(r,"Id"),remarks=Json.Str(r,"Remarks");var m=HostRules.FirstOrDefault(x=>x[0]==id)??HostRules.FirstOrDefault(x=>x[2]==remarks);return m==null?null:m[0].Substring("app-manager-host-".Length);}
+ static void AddHostRules(List<object> rules,int start,List<HostEntry> hosts){if(hosts==null)return;var domains=hosts.Where(x=>!x.IsIp).Select(x=>x.Value).ToArray();var ips=hosts.Where(x=>x.IsIp).Select(x=>x.Value).ToArray();
+  if(domains.Length>0)rules.Add(new Dictionary<string,object>{{"id",HostRules[start][0]},{"remarks",HostRules[start][2]},{"outboundTag",HostRules[start][1]},{"domain",domains},{"enabled",true}});
+  if(ips.Length>0)rules.Add(new Dictionary<string,object>{{"id",HostRules[start+1][0]},{"remarks",HostRules[start+1][2]},{"outboundTag",HostRules[start+1][1]},{"ip",ips},{"enabled",true}});}
+ public static List<object> BuildRules(string oldRules,List<AppEntry> direct,List<AppEntry> split,List<HostEntry> directHosts=null,List<HostEntry> proxyHosts=null){var rules=new List<object>();AddHostRules(rules,0,directHosts);AddHostRules(rules,2,proxyHosts);if(direct.Count>0)rules.Add(new Dictionary<string,object>{{"id","app-manager-direct"},{"remarks","全部直连应用"},{"outboundTag","direct"},{"process",direct.Select(x=>x.Match).ToArray()},{"enabled",true}});rules.Add(new Dictionary<string,object>{{"id","app-manager-split"},{"remarks","指定应用国内直连，国外代理"},{"outboundTag","direct"},{"domain",new[]{"geosite:app-split-cn"}},{"enabled",split.Count>0}});
+  if(!string.IsNullOrEmpty(oldRules)){foreach(var value in Json.Arr(Json.Serializer().DeserializeObject(oldRules))){var r=Json.Obj(value);if(r.Count==0||Json.Get(r,"value")!=null)throw new IOException("现有路由结构异常，请先备份并修复。");if(HostRuleKind(r)!=null)continue;if(Json.Get(r,"Process")!=null&&Json.Str(r,"OutboundTag")=="direct")continue;if(Json.Arr(Json.Get(r,"Domain")).Any(x=>Convert.ToString(x)=="geosite:app-split-cn"))continue;if(Json.Str(r,"OutboundTag")=="proxy"&&Json.Str(r,"Port")=="0-65535")continue;rules.Add(r);}}
   else{rules.Add(new Dictionary<string,object>{{"remarks","阻断 UDP 443"},{"outboundTag","block"},{"port","443"},{"network","udp"},{"enabled",true}});rules.Add(new Dictionary<string,object>{{"remarks","局域网直连"},{"outboundTag","direct"},{"ip",new[]{"geoip:private"}},{"enabled",true}});rules.Add(new Dictionary<string,object>{{"remarks","局域网域名直连"},{"outboundTag","direct"},{"domain",new[]{"geosite:private"}},{"enabled",true}});}
   rules.Add(new Dictionary<string,object>{{"id","app-manager-fallback"},{"remarks","其余应用全部代理"},{"outboundTag","proxy"},{"port","0-65535"},{"enabled",true}});return rules;
  }
+ /// <summary>把域名 / IP 名单按 v2rayN 的转换方式写成 sing-box 规则，用已安装的内核校验。</summary>
+ public void ValidateHosts(List<HostEntry> hosts){
+  var rule=new Dictionary<string,object>();Action<string,string> put=(key,value)=>{object list;if(!rule.TryGetValue(key,out list))rule[key]=list=new List<string>();((List<string>)list).Add(value);};
+  var ipRule=new List<string>();
+  foreach(var h in hosts){if(h.IsGeo||h.Kind=="其他")continue;if(h.IsIp){ipRule.Add(h.Value);continue;}int c=h.Value.IndexOf(':');string p=h.Value.Substring(0,c),v=h.Value.Substring(c+1);put(p=="domain"?"domain_suffix":p=="full"?"domain":p=="keyword"?"domain_keyword":"domain_regex",v);}
+  var rules=new List<object>();if(rule.Count>0){rule["outbound"]="direct";rules.Add(rule);}if(ipRule.Count>0)rules.Add(new Dictionary<string,object>{{"ip_cidr",ipRule},{"outbound","direct"}});if(rules.Count==0)return;
+  Directory.CreateDirectory(Support);string check=Path.Combine(Support,"check-"+Guid.NewGuid().ToString("N")+".json");
+  try{var config=new Dictionary<string,object>{{"outbounds",new object[]{new Dictionary<string,object>{{"type","direct"},{"tag","direct"}}}},{"route",new Dictionary<string,object>{{"rules",rules}}}};Json.Atomic(check,Json.Text(config));RunCore("check -c "+Quote(check));}
+  catch(IOException e){throw new IOException("域名 / IP 名单没有通过 sing-box 校验，配置没有保存。\r\n"+e.Message);}
+  finally{if(File.Exists(check))File.Delete(check);}
+ }
+ /// <summary>geosite: / geoip: 只允许使用本机已有的规则库，避免内核启动时去下载而导致断网。</summary>
+ public void CheckGeo(List<HostEntry> hosts){foreach(var h in hosts.Where(x=>x.IsGeo)){string name=h.Value.Replace(':','-');if(!File.Exists(Path.Combine(Root,"bin","srss",name+".srs")))throw new ArgumentException("本机 v2rayN 没有「"+h.Value+"」规则库（bin\\srss\\"+name+".srs），请换成具体域名 / IP。");}}
  public void ValidateSource(string sourcePath){
   string check=Path.Combine(Support,"check-"+Guid.NewGuid().ToString("N")+".json");
   try{
@@ -146,7 +168,10 @@ public sealed class RoutingStore {
    Json.Atomic(check,Json.Text(config));RunCore("check -c "+Quote(check));
   }finally{if(File.Exists(check))File.Delete(check);}
  }
- public RouteSnapshot Save(RouteSnapshot snapshot,string name,List<AppEntry> direct,List<AppEntry> split,bool validate=true){
+ public RouteSnapshot Save(RouteSnapshot snapshot,string name,List<AppEntry> direct,List<AppEntry> split,bool validate=true,List<HostEntry> directHosts=null,List<HostEntry> proxyHosts=null){
+  directHosts=directHosts??snapshot.DirectHosts;proxyHosts=proxyHosts??snapshot.ProxyHosts;
+  foreach(var x in directHosts)if(proxyHosts.Any(y=>HostEntry.Same(x,y)))throw new ArgumentException("同一个域名 / IP 不能同时放在直连和代理名单中："+x.Text);
+  var allHosts=directHosts.Concat(proxyHosts).ToList();CheckGeo(allHosts);if(validate)ValidateHosts(allHosts);
   name=(name??"").Trim();if(name.Length==0||name.Length>100)throw new ArgumentException("请填写规则集名称（1—100 个字）。");
   if(Profiles().Any(p=>p.Name==name&&(snapshot.IsNew||p.Id!=snapshot.Profile.Id)))throw new ArgumentException("已经有同名规则集，请换一个名称。");
   foreach(var x in direct)if(split.Any(y=>string.Equals(x.Match,y.Match,StringComparison.OrdinalIgnoreCase)))throw new ArgumentException("同一项不能同时放在两个名单中："+x.Match);
@@ -162,11 +187,11 @@ public sealed class RoutingStore {
   string staged=Path.Combine(Support,"stage-"+Guid.NewGuid().ToString("N")+".json");
   Json.Atomic(staged,sourceText);try{if(validate)ValidateSource(staged);}catch{File.Delete(staged);throw;}
   var definitions=string.IsNullOrEmpty(oldMapping)?new List<object>():Json.Arr(Json.Serializer().DeserializeObject(oldMapping));definitions=definitions.Where(x=>Json.Str(Json.Obj(x),"tag")!=Tag).ToList();definitions.Add(new Dictionary<string,object>{{"tag",Tag},{"type","local"},{"format","source"},{"path",sourcePath}});
-  var rules=BuildRules(snapshot.IsNew?null:snapshot.Profile.RawRules,direct,split);string rulesText=Json.Text(rules);string mappingText=Json.Text(definitions);
+  var rules=BuildRules(snapshot.IsNew?null:snapshot.Profile.RawRules,direct,split,directHosts,proxyHosts);string rulesText=Json.Text(rules);string mappingText=Json.Text(definitions);
   string backup=Path.Combine(Support,"backups","manager-"+DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));Directory.CreateDirectory(backup);
   if(snapshot.Profile!=null)Json.Atomic(Path.Combine(backup,"routing.json"),Json.Text(snapshot.Profile.Raw));if(oldSource!=null)File.WriteAllText(Path.Combine(backup,"source.json"),oldSource,Encoding.UTF8);if(oldMapping!=null)File.WriteAllText(Path.Combine(backup,"mapping.json"),oldMapping,Encoding.UTF8);
   bool filesChanged=false;using(var db=new Sqlite(DbPath)){db.Exec("BEGIN IMMEDIATE");try{
-    if(!snapshot.IsNew){var current=db.Query("SELECT * FROM RoutingItem WHERE Id=?",id).FirstOrDefault();if(current==null||Json.Str(current,"RuleSet")!=snapshot.Profile.RawRules||Json.Str(current,"Remarks")!=snapshot.Profile.Name||Json.Str(current,"CustomRulesetPath4Singbox")!=snapshot.Profile.MappingPath)throw new IOException("v2rayN 中的规则刚刚被其他窗口修改了，请先点重新读取，避免覆盖。");if(snapshot.MappingText!=null&&File.ReadAllText(snapshot.Profile.MappingPath,Encoding.UTF8)!=snapshot.MappingText)throw new IOException("规则集映射刚刚被其他程序修改，请先重新读取。");if(snapshot.SourceText!=null&&File.Exists(snapshot.SourcePath)&&!snapshot.SourcePath.EndsWith(".srs",StringComparison.OrdinalIgnoreCase)&&File.ReadAllText(snapshot.SourcePath,Encoding.UTF8)!=snapshot.SourceText)throw new IOException("本地分流文件已被其他程序修改，请重新读取后再保存。");}
+    if(!snapshot.IsNew){var current=db.Query("SELECT * FROM RoutingItem WHERE Id=?",id).FirstOrDefault();if(current==null||Json.Str(current,"RuleSet")!=snapshot.Profile.RawRules||Json.Str(current,"Remarks")!=snapshot.Profile.Name||Json.Str(current,"CustomRulesetPath4Singbox")!=snapshot.Profile.MappingPath)throw new IOException("v2rayN 中的规则刚刚被其他窗口修改了，请先点「刷新」重新读取，避免覆盖。");if(snapshot.MappingText!=null&&File.ReadAllText(snapshot.Profile.MappingPath,Encoding.UTF8)!=snapshot.MappingText)throw new IOException("规则集映射刚刚被其他程序修改，请先点「刷新」。");if(snapshot.SourceText!=null&&File.Exists(snapshot.SourcePath)&&!snapshot.SourcePath.EndsWith(".srs",StringComparison.OrdinalIgnoreCase)&&File.ReadAllText(snapshot.SourcePath,Encoding.UTF8)!=snapshot.SourceText)throw new IOException("本地分流文件已被其他程序修改，请先点「刷新」。");}
     filesChanged=true;Json.Atomic(sourcePath,sourceText);Json.Atomic(mappingPath,mappingText);
     if(snapshot.IsNew)db.Exec("INSERT INTO RoutingItem (Id,Remarks,RuleSet,RuleNum,CustomRulesetPath4Singbox,Enabled,Locked,IsActive,Sort) VALUES (?,?,?,?,?,1,0,0,(SELECT COALESCE(MAX(Sort),0)+1 FROM RoutingItem))",id,name,rulesText,rules.Count,mappingPath);
     else if(db.Exec("UPDATE RoutingItem SET Remarks=?,RuleSet=?,RuleNum=?,CustomRulesetPath4Singbox=? WHERE Id=?",name,rulesText,rules.Count,mappingPath,id)!=1)throw new IOException("所选规则集不存在，未保存。");
@@ -175,14 +200,69 @@ public sealed class RoutingStore {
    finally{if(File.Exists(staged))File.Delete(staged);}}
   return Load(Profiles().First(x=>x.Id==id));
  }
+ static string CheckName(string name){name=(name??"").Trim();if(name.Length==0||name.Length>100)throw new ArgumentException("名称需要 1—100 个字");return name;}
+ /// <summary>只修改规则集名称。</summary>
+ public void Rename(string id,string name){
+  name=CheckName(name);if(Profiles().Any(p=>p.Name==name&&p.Id!=id))throw new ArgumentException("已经有同名规则集");
+  using(var db=new Sqlite(DbPath))if(db.Exec("UPDATE RoutingItem SET Remarks=? WHERE Id=?",name,id)!=1)throw new IOException("规则集不存在，可能已被删除");
+ }
+ /// <summary>删除本工具创建的规则集（先备份）；v2rayN 正在使用的不能删。</summary>
+ public void Delete(string id){
+  var profile=Profiles().FirstOrDefault(p=>p.Id==id);if(profile==null)return;
+  if(!profile.Managed)throw new IOException("只能删除本工具创建的规则集");
+  if(profile.Active)throw new IOException("v2rayN 正在使用「"+profile.Name+"」，请先在 v2rayN 中换用其他路由再删除");
+  string backup=Path.Combine(Support,"backups","deleted-"+DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));Directory.CreateDirectory(backup);
+  Json.Atomic(Path.Combine(backup,"routing.json"),Json.Text(profile.Raw));
+  var files=new List<string>();string mapping=profile.MappingPath;
+  if(!string.IsNullOrEmpty(mapping)&&File.Exists(mapping)){files.Add(mapping);try{foreach(var d in Json.Arr(Json.Serializer().DeserializeObject(File.ReadAllText(mapping,Encoding.UTF8))).Select(Json.Obj).Where(d=>Json.Str(d,"tag")==Tag)){string p=Json.Str(d,"path");if(!Path.IsPathRooted(p))p=Path.Combine(Root,p);if(File.Exists(p))files.Add(p);}}catch{}}
+  // 只清理本工具目录里、且没有被其他规则集引用的文件。
+  var others=Profiles().Where(p=>p.Id!=id).Select(p=>p.MappingPath??"").ToList();
+  files=files.Where(f=>Path.GetFullPath(f).StartsWith(Path.GetFullPath(Support)+"\\",StringComparison.OrdinalIgnoreCase)&&!others.Any(o=>string.Equals(o,f,StringComparison.OrdinalIgnoreCase))).ToList();
+  foreach(var f in files)File.Copy(f,Path.Combine(backup,Path.GetFileName(f)),true);
+  using(var db=new Sqlite(DbPath))if(db.Exec("DELETE FROM RoutingItem WHERE Id=? AND IFNULL(CAST(IsActive AS INTEGER),0)<>1",id)!=1)throw new IOException("删除失败：规则集不存在或正在使用");
+  foreach(var f in files)try{File.Delete(f);}catch{}
+ }
+}
+
+/// <summary>只读查询 sing-box 的 Clash API：「全局 / 直连」模式会让所有分流规则失效。</summary>
+public static class ClashMode {
+ public static string Controller(string root,out string secret){
+  secret=null;
+  try{var config=Json.Obj(Json.Read(Path.Combine(root,"binConfigs","config.json")));var api=Json.Obj(Json.Get(Json.Obj(Json.Get(config,"experimental")),"clash_api"));
+   string controller=Json.Str(api,"external_controller");secret=Json.Str(api,"secret");if(string.IsNullOrEmpty(controller))return null;
+   if(controller.StartsWith(":"))controller="127.0.0.1"+controller;else if(controller.StartsWith("0.0.0.0:"))controller="127.0.0.1"+controller.Substring(7);else if(controller.StartsWith("[::]:"))controller="127.0.0.1"+controller.Substring(4);
+   return controller;}catch{return null;}
+ }
+ /// <summary>返回 Rule / Global / Direct；v2rayN 未运行、非 sing-box 内核或查询失败时返回 null。</summary>
+ public static string Query(string root){
+  string secret;string controller=Controller(root,out secret);if(controller==null)return null;
+  try{var request=(HttpWebRequest)WebRequest.Create("http://"+controller+"/configs");request.Proxy=null;request.Timeout=1500;request.ReadWriteTimeout=1500;if(!string.IsNullOrEmpty(secret))request.Headers["Authorization"]="Bearer "+secret;
+   using(var response=request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream(),Encoding.UTF8))return Json.Str(Json.Obj(Json.Serializer().DeserializeObject(reader.ReadToEnd())),"mode");}
+  catch{return null;}
+ }
+ public static string Warning(string mode){
+  if(string.Equals(mode,"Global",StringComparison.OrdinalIgnoreCase))return "v2rayN 处于「全局」模式，所有流量都走代理，分流不生效";
+  if(string.Equals(mode,"Direct",StringComparison.OrdinalIgnoreCase))return "v2rayN 处于「直连」模式，所有流量都直连，分流不生效";
+  return null;
+ }
 }
 
 public static class Discovery {
  public static string SettingsPath{get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"AppRoutingManager","settings.json");}}
  public static string SavedRoot(){try{return Json.Str(Json.Obj(Json.Read(SettingsPath)),"v2rayNFolder");}catch{return null;}}
- public static void Remember(string root){try{Json.Atomic(SettingsPath,Json.Text(new Dictionary<string,object>{{"v2rayNFolder",root}}));}catch{}}
- public static string Find(){var candidates=new List<string>();string saved=SavedRoot();if(saved!=null)candidates.Add(saved);
-  foreach(var p in Process.GetProcessesByName("v2rayN")){using(p){try{candidates.Add(Path.GetDirectoryName(p.MainModule.FileName));}catch{}}}
+ public static void Remember(string root){SetPref("v2rayNFolder",root);}
+ static Dictionary<string,object> Prefs(){try{return Json.Obj(Json.Read(SettingsPath))??new Dictionary<string,object>();}catch{return new Dictionary<string,object>();}}
+ public static string Pref(string key){try{return Json.Str(Prefs(),key);}catch{return null;}}
+ public static void SetPref(string key,string value){try{var all=Prefs();all[key]=value;Json.Atomic(SettingsPath,Json.Text(all));}catch{}}
+ [System.Runtime.InteropServices.DllImport("kernel32.dll",SetLastError=true)]static extern IntPtr OpenProcess(int access,bool inherit,int pid);
+ [System.Runtime.InteropServices.DllImport("kernel32.dll",SetLastError=true,CharSet=System.Runtime.InteropServices.CharSet.Unicode)]static extern bool QueryFullProcessImageName(IntPtr process,int flags,System.Text.StringBuilder name,ref int size);
+ [System.Runtime.InteropServices.DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr handle);
+ /// <summary>正在运行的 v2rayN 所在目录（v2rayN 以管理员身份运行时也能读取）；没有则返回 null。</summary>
+ public static string Running(){
+  foreach(var p in Process.GetProcessesByName("v2rayN")){using(p){try{IntPtr h=OpenProcess(0x1000,false,p.Id);if(h==IntPtr.Zero)continue;try{var sb=new System.Text.StringBuilder(1024);int n=sb.Capacity;if(QueryFullProcessImageName(h,0,sb,ref n)){string dir=Path.GetDirectoryName(sb.ToString());if(RoutingStore.IsRoot(dir))return dir;}}finally{CloseHandle(h);}}catch{}}}
+  return null;
+ }
+ public static string Find(){var candidates=new List<string>();string running=Running();if(running!=null)return running;string saved=SavedRoot();if(saved!=null)candidates.Add(saved);
   string self=AppDomain.CurrentDomain.BaseDirectory;for(int i=0;i<3&&self!=null;i++){candidates.Add(self);self=Path.GetDirectoryName(self.TrimEnd('\\'));}
   foreach(var c in candidates)if(RoutingStore.IsRoot(c))return c;
   var roots=new List<string>{Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Downloads"),Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)};
